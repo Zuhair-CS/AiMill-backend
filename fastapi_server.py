@@ -294,35 +294,34 @@ def initialize_forecaster():
 
 @app.on_event("startup")
 async def startup_event():
-    print("Startup minimal")
-    # load_data()
-    # initialize_forecaster()
+    load_data()
+    initialize_forecaster()
     
-    # # Automatically generate forecasts for next year if needed
-    # try:
-    #     if FORECAST_SERVICE_AVAILABLE:
-    #         fcast = data_cache.get("fact_sku_forecast", pd.DataFrame())
-    #         if not fcast.empty and "date" in fcast.columns:
-    #             max_date = pd.to_datetime(fcast["date"]).max()
-    #             target_end_date = pd.Timestamp("2027-02-10")  # 1 year from 2026-02-10
+    # Automatically generate forecasts for next year if needed
+    try:
+        if FORECAST_SERVICE_AVAILABLE:
+            fcast = data_cache.get("fact_sku_forecast", pd.DataFrame())
+            if not fcast.empty and "date" in fcast.columns:
+                max_date = pd.to_datetime(fcast["date"]).max()
+                target_end_date = pd.Timestamp("2027-02-10")  # 1 year from 2026-02-10
                 
-    #             if max_date < target_end_date:
-    #                 print(f"🔄 Auto-generating forecasts from {max_date.date()} to {target_end_date.date()}")
-    #                 result = generate_forecasts_and_propagate_datasets(
-    #                     start_date=max_date + pd.Timedelta(days=1),
-    #                     end_date=target_end_date,
-    #                     forecaster=forecaster,
-    #                     data_cache=data_cache,
-    #                     backend_dir=_backend_dir,
-    #                     data_dir=DATA_DIR,
-    #                     update_derived_datasets_func=_update_derived_datasets
-    #                 )
-    #                 if result["success"]:
-    #                     # Reload data to include new forecasts
-    #                     load_data()
-    #                     print(f"✅ Auto-generated {result['records']} forecast records")
-    # except Exception as e:
-    #     print(f"⚠️ Error in auto-forecast generation: {e}")
+                if max_date < target_end_date:
+                    print(f"🔄 Auto-generating forecasts from {max_date.date()} to {target_end_date.date()}")
+                    result = generate_forecasts_and_propagate_datasets(
+                        start_date=max_date + pd.Timedelta(days=1),
+                        end_date=target_end_date,
+                        forecaster=forecaster,
+                        data_cache=data_cache,
+                        backend_dir=_backend_dir,
+                        data_dir=DATA_DIR,
+                        update_derived_datasets_func=_update_derived_datasets
+                    )
+                    if result["success"]:
+                        # Reload data to include new forecasts
+                        load_data()
+                        print(f"✅ Auto-generated {result['records']} forecast records")
+    except Exception as e:
+        print(f"⚠️ Error in auto-forecast generation: {e}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
