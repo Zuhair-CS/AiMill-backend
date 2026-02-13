@@ -48,101 +48,97 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # MC4 Schema - datasets are in backend/datasets (now that we're in backend/)
 DATASETS_DIR = os.path.join(BASE_DIR, "datasets")
 
-# MC4 Schema for Text2SQL chatbot
+# MC4 Schema for Text2SQL chatbot - Updated to match required schema
 schema = [
+    # Layer 1 - Master Data
     {
-        "table_name": "sku_forecast",
-        "path": os.path.join(DATASETS_DIR, "sku_forecast.csv"),
+        "table_name": "dim_mill",
+        "path": os.path.join(DATASETS_DIR, "dim_mill.csv"),
     },
     {
-        "table_name": "sku_master",
-        "path": os.path.join(DATASETS_DIR, "sku_master.csv"),
+        "table_name": "dim_recipe",
+        "path": os.path.join(DATASETS_DIR, "dim_recipe.csv"),
     },
     {
-        "table_name": "recipe_master",
-        "path": os.path.join(DATASETS_DIR, "recipe_master.csv"),
+        "table_name": "dim_flour_type",
+        "path": os.path.join(DATASETS_DIR, "dim_flour_type.csv"),
     },
     {
-        "table_name": "recipe_eligibility",
-        "path": os.path.join(DATASETS_DIR, "recipe_eligibility.csv"),
+        "table_name": "dim_sku",
+        "path": os.path.join(DATASETS_DIR, "dim_sku.csv"),
     },
     {
-        "table_name": "mill_master",
-        "path": os.path.join(DATASETS_DIR, "mill_master.csv"),
+        "table_name": "dim_wheat_type",
+        "path": os.path.join(DATASETS_DIR, "dim_wheat_type.csv"),
     },
     {
-        "table_name": "mill_load",
-        "path": os.path.join(DATASETS_DIR, "mill_load.csv"),
+        "table_name": "dim_country",
+        "path": os.path.join(DATASETS_DIR, "dim_country.csv"),
+    },
+    # Layer 2 - Mapping Tables
+    {
+        "table_name": "map_flour_recipe",
+        "path": os.path.join(DATASETS_DIR, "map_flour_recipe.csv"),
     },
     {
-        "table_name": "mill_load_weekly",
-        "path": os.path.join(DATASETS_DIR, "mill_load_weekly.csv"),
+        "table_name": "map_recipe_mill",
+        "path": os.path.join(DATASETS_DIR, "map_recipe_mill.csv"),
     },
     {
-        "table_name": "mill_load_monthly",
-        "path": os.path.join(DATASETS_DIR, "mill_load_monthly.csv"),
+        "table_name": "map_sku_flour",
+        "path": os.path.join(DATASETS_DIR, "map_sku_flour.csv"),
     },
     {
-        "table_name": "mill_load_yearly",
-        "path": os.path.join(DATASETS_DIR, "mill_load_yearly.csv"),
+        "table_name": "map_recipe_wheat",
+        "path": os.path.join(DATASETS_DIR, "map_recipe_wheat.csv"),
     },
     {
-        "table_name": "mill_capacity",
-        "path": os.path.join(DATASETS_DIR, "mill_capacity.csv"),
+        "table_name": "map_wheat_country",
+        "path": os.path.join(DATASETS_DIR, "map_wheat_country.csv"),
+    },
+    # Layer 3 - Fact Tables
+    {
+        "table_name": "fact_sku_forecast",
+        "path": os.path.join(DATASETS_DIR, "fact_sku_forecast.csv"),
     },
     {
-        "table_name": "mill_recipe_schedule",
-        "path": os.path.join(DATASETS_DIR, "mill_recipe_schedule.csv"),
+        "table_name": "fact_bulk_flour_requirement",
+        "path": os.path.join(DATASETS_DIR, "fact_bulk_flour_requirement.csv"),
     },
     {
-        "table_name": "mill_recipe_rates",
-        "path": os.path.join(DATASETS_DIR, "mill_recipe_rates.csv"),
+        "table_name": "fact_recipe_demand",
+        "path": os.path.join(DATASETS_DIR, "fact_recipe_demand.csv"),
     },
     {
-        "table_name": "bulk_flour_demand",
-        "path": os.path.join(DATASETS_DIR, "bulk_flour_demand.csv"),
+        "table_name": "fact_mill_recipe_plan",
+        "path": os.path.join(DATASETS_DIR, "fact_mill_recipe_plan.csv"),
     },
     {
-        "table_name": "recipe_demand",
-        "path": os.path.join(DATASETS_DIR, "recipe_demand.csv"),
+        "table_name": "fact_mill_capacity",
+        "path": os.path.join(DATASETS_DIR, "fact_mill_capacity.csv"),
     },
     {
-        "table_name": "recipe_mix",
-        "path": os.path.join(DATASETS_DIR, "recipe_mix.csv"),
+        "table_name": "fact_mill_schedule_daily",
+        "path": os.path.join(DATASETS_DIR, "fact_mill_schedule_daily.csv"),
     },
     {
-        "table_name": "raw_material",
-        "path": os.path.join(DATASETS_DIR, "raw_material.csv"),
+        "table_name": "fact_wheat_requirement",
+        "path": os.path.join(DATASETS_DIR, "fact_wheat_requirement.csv"),
     },
     {
-        "table_name": "time_dimension",
-        "path": os.path.join(DATASETS_DIR, "time_dimension.csv"),
+        "table_name": "fact_waste_metrics",
+        "path": os.path.join(DATASETS_DIR, "fact_waste_metrics.csv"),
+    },
+    # Layer 4 - KPI
+    {
+        "table_name": "fact_kpi_snapshot",
+        "path": os.path.join(DATASETS_DIR, "fact_kpi_snapshot.csv"),
     },
 ]
 
 
 
-# BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-# DATASETS_DIR = os.path.join(BASE_DIR, "datasets")
 
-# schema = [
-#     {
-#         "table_name": "sku_daily_forecast",
-#         "path": os.path.join(DATASETS_DIR, "sku_daily_forecast.csv")
-#     },
-#     {
-#         "table_name": "order_log",
-#         "path": os.path.join(DATASETS_DIR, "order_log.csv")
-#     },
-#     {
-#         "table_name": "sku_daily_sales",
-#         "path": os.path.join(DATASETS_DIR, "sku_daily_sales.csv")
-#     },
-#     {
-#         "table_name": "raw_material_inventory",
-#         "path": os.path.join(DATASETS_DIR, "raw_material_inventory.csv")
-#     },
-# ]
 
 # Load schema - filter out files that don't exist
 existing_schema = []
@@ -176,8 +172,18 @@ summarizer = SummarizerAgent()
 
 
 def run_chatbot_query(question: str):
-    sql = t2s.run(question)
-    result = execute_sql(db_path, sql)
+    try:
+        sql = t2s.run(question)
+        logger.debug(f"Generated SQL for query '{question}': {sql}")
+    except Exception as e:
+        logger.error(f"SQL generation failed for query '{question}': {str(e)}")
+        raise
+    
+    try:
+        result = execute_sql(db_path, sql)
+    except Exception as e:
+        logger.error(f"SQL execution failed. Query: '{question}'. SQL: {sql}. Error: {str(e)}")
+        raise
 
     # ==================================================
     # INSERT handling (order_log / raw_material_log)
@@ -305,3 +311,5 @@ def run_chatbot_query(question: str):
         "chart": viz,  # Frontend expects 'chart' not 'viz'
         "mime": mime  # Keep mime for reference, but frontend uses chart with data URI
     }
+
+    
