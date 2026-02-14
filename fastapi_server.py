@@ -568,7 +568,7 @@ async def get_executive_kpis(
         rp = dg.generate_raw_material_prices(time_dim_range)
         avg_price = float(rp["wheat_price_sar_per_ton"].mean()) if not rp.empty else 0
 
-        # Generate for the previous period
+        # Generate for previous period
         prev_start = from_dt - pd.Timedelta(days=period_days)
         prev_end = from_dt - pd.Timedelta(days=1)
         prev_time_dim = _generate_time_dimension_extended(prev_start, prev_end)
