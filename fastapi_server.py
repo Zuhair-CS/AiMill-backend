@@ -1390,16 +1390,76 @@ def _get_forecast_data(from_dt, to_dt, sku_id=None, update_dataset=True):
         # Only generate forecasts if the requested end date is after actual data ends
         if forecast_start <= forecast_end and forecast_start > ACTUAL_DATA_END_DATE:
             print(f"📈 Generating forecasts from {forecast_start.date()} to {forecast_end.date()}")
-            if FORECAST_SERVICE_AVAILABLE:
-                future_forecast = generate_future_forecast(
-                    start_date=forecast_start,
-                    end_date=forecast_end,
-                    dim_sku=dim_sku,
-                    forecaster=forecaster,
-                    data_cache=data_cache
-                )
-            else:
-                future_forecast = pd.DataFrame()
+            if FORECAST_SERVICE_AVAILABLE and generate_future_forecast:
+                try:
+                    future_forecast = generate_future_forecast(
+                        start_date=forecast_start,
+                        end_date=forecast_end,
+                        dim_sku=dim_sku,
+                        forecaster=forecaster,
+                        data_cache=data_cache
+                    )
+                except Exception as e:
+                    print(f"⚠️ Error generating forecasts with service: {e}")
+                    # Fall through to simple fallback
+                    future_forecast = pd.DataFrame()
+            
+            # Fallback: Generate simple forecasts if service unavailable or failed
+            if future_forecast.empty and not dim_sku.empty:
+                print(f"   Using fallback forecast generation...")
+                dates = pd.date_range(start=forecast_start, end=forecast_end, freq='D')
+                sku_list = dim_sku["sku_id"].unique()
+                all_forecasts = []
+                
+                # Get historical data for trend calculation
+                historical = data_cache.get("fact_sku_forecast", pd.DataFrame())
+                if not historical.empty and "date" in historical.columns:
+                    historical["date"] = pd.to_datetime(historical["date"])
+                
+                for sku_id in sku_list:
+                    sku_info = dim_sku[dim_sku["sku_id"] == sku_id]
+                    pack_size_kg = float(sku_info.iloc[0]["pack_size_kg"]) if not sku_info.empty else 10.0
+                    
+                    # Calculate base demand from recent historical data
+                    base_demand = 100.0  # Default
+                    std_demand = 10.0
+                    
+                    if not historical.empty:
+                        sku_data = historical[historical["sku_id"] == sku_id].copy()
+                        if not sku_data.empty:
+                            sku_data = sku_data.sort_values("date")
+                            recent = sku_data.tail(7)  # Last 7 days
+                            if len(recent) > 0:
+                                base_demand = recent["demand_tons"].mean()
+                                std_demand = recent["demand_tons"].std() if len(recent) > 1 else base_demand * 0.1
+                    
+                    # Generate forecast values (simple: use recent average with small variation)
+                    forecast_values = []
+                    for i, date in enumerate(dates):
+                        # Add small random variation to base demand
+                        variation = np.random.normal(0, std_demand * 0.1)
+                        value = max(0, base_demand + variation)
+                        forecast_values.append(round(value, 2))
+                    
+                    forecast_df = pd.DataFrame({
+                        'date': dates,
+                        'sku_id': sku_id,
+                        'demand_tons': forecast_values,
+                        'demand_units': [int(v * 1000 / pack_size_kg) for v in forecast_values],
+                        'confidence_pct': 0.8,
+                        'seasonality_index': 1.0,
+                        'scenario_id': 'base',
+                        'forecast_lower': [round(max(0, v - 1.96 * std_demand), 2) for v in forecast_values],
+                        'forecast_upper': [round(v + 1.96 * std_demand, 2) for v in forecast_values]
+                    })
+                    all_forecasts.append(forecast_df)
+                
+                if all_forecasts:
+                    future_forecast = pd.concat(all_forecasts, ignore_index=True)
+                    future_forecast['date'] = pd.to_datetime(future_forecast['date'])
+                    # Convert date to string format to match historical
+                    future_forecast['date'] = future_forecast['date'].dt.strftime('%Y-%m-%d')
+                    print(f"   ✅ Generated {len(future_forecast)} fallback forecast records")
         elif forecast_start <= ACTUAL_DATA_END_DATE:
             print(f"ℹ️ Requested date range ({from_dt.date()} to {to_dt.date()}) is within actual data period (ends {ACTUAL_DATA_END_DATE.date()}). No forecasts needed.")
             
@@ -1443,6 +1503,7 @@ async def get_sku_forecast(
     period: Optional[str] = None,
     sku_id: Optional[str] = None,
     mill_id: Optional[str] = None,
+    flour_type: Optional[str] = None,
     scenario: Optional[str] = Query("base"),
 ):
     try:
@@ -1466,9 +1527,134 @@ async def get_sku_forecast(
             fcast = fcast.merge(dim_flour[["flour_type_id", "flour_name"]], on="flour_type_id", how="left")
             fcast.rename(columns={"flour_name": "flour_type"}, inplace=True)
         
-        # Note: SKU forecast is demand-level data and does not have mill_id.
-        # Mill filtering is not applicable to SKU forecasts as they represent
-        # aggregate demand, not production by mill.
+        # Filter by flour_type if provided
+        if flour_type:
+            fcast = fcast[fcast["flour_type"] == flour_type]
+        
+        # Mill filtering: Map SKU demand to mills through recipes and schedules
+        if mill_id:
+            # Get mapping tables
+            map_flour_recipe = data_cache.get("map_flour_recipe", pd.DataFrame())
+            map_recipe_mill = data_cache.get("map_recipe_mill", pd.DataFrame())
+            schedule = data_cache.get("fact_schedule", pd.DataFrame())
+            
+            # Filter schedule by mill if provided
+            mill_ids = [m.strip() for m in mill_id.split(",")]
+            
+            # Join SKU → Flour Type → Recipe
+            if not map_flour_recipe.empty and "flour_type_id" in fcast.columns:
+                fcast = fcast.merge(map_flour_recipe[["flour_type_id", "recipe_id", "default_allocation_pct"]], 
+                                  on="flour_type_id", how="left")
+                
+                # IMPORTANT: Allocate SKU demand across recipes first using default_allocation_pct
+                # This prevents double-counting when a flour_type maps to multiple recipes
+                fcast["demand_tons"] = (fcast["demand_tons"] * fcast["default_allocation_pct"].fillna(1.0)).round(2)
+                fcast["demand_units"] = (fcast["demand_units"] * fcast["default_allocation_pct"].fillna(1.0)).round(0).astype(int)
+            
+            # For historical data (has schedule), use actual production allocation
+            # For forecast data, use map_recipe_mill to allocate proportionally
+            historical_mask = fcast["date"] <= pd.Timestamp("2026-02-14")
+            forecast_mask = fcast["date"] > pd.Timestamp("2026-02-14")
+            
+            result_rows = []
+            
+            # Historical data: use capacity-based allocation (same as forecast) for consistency
+            # This ensures historical and forecast use the same allocation method based on mill capacity
+            if historical_mask.any() and not map_recipe_mill.empty:
+                hist_fcast = fcast[historical_mask].copy()
+                
+                if "recipe_id" in hist_fcast.columns:
+                    # Calculate total capacity (sum of max_rate_tph) per recipe across ALL mills
+                    # This is needed for proper capacity-weighted allocation
+                    recipe_capacity_totals = map_recipe_mill.groupby("recipe_id")["max_rate_tph"].sum().reset_index()
+                    recipe_capacity_totals.rename(columns={"max_rate_tph": "total_capacity_all_mills"}, inplace=True)
+                    
+                    # Filter map_recipe_mill by requested mills only (includes max_rate_tph)
+                    allowed_mills = map_recipe_mill[map_recipe_mill["mill_id"].isin(mill_ids)].copy()
+                    
+                    # Join SKU forecast with allowed mills (only selected mills, with their capacity)
+                    hist_merged = hist_fcast.merge(
+                        allowed_mills[["recipe_id", "mill_id", "max_rate_tph"]],
+                        on="recipe_id",
+                        how="inner"  # Only include recipes that selected mills can produce
+                    )
+                    
+                    # Join with total capacity to calculate proper allocation
+                    hist_merged = hist_merged.merge(
+                        recipe_capacity_totals,
+                        on="recipe_id",
+                        how="left"
+                    )
+                    
+                    # Allocate proportionally based on mill capacity: 
+                    # mill_demand = (mill_max_rate_tph / total_capacity_all_mills) * sku_demand
+                    # This ensures capacity-weighted allocation, consistent with forecast
+                    # GUARDRAIL: Sum of individual mills (M1 + M2 + M3) = Total (all mills)
+                    # This works because: sum(mill_max_rate_tph / total_capacity_all_mills) = 1.0
+                    total_capacity = hist_merged["total_capacity_all_mills"].fillna(1).replace(0, 1)
+                    capacity_ratio = hist_merged["max_rate_tph"] / total_capacity
+                    hist_merged["demand_tons"] = (hist_merged["demand_tons"] * capacity_ratio).round(2)
+                    hist_merged["demand_units"] = (hist_merged["demand_units"] * capacity_ratio).round(0).astype(int)
+                    
+                    # Drop helper columns
+                    hist_merged = hist_merged.drop(columns=["max_rate_tph", "total_capacity_all_mills"], errors="ignore")
+                    result_rows.append(hist_merged)
+            
+            # Forecast data: use map_recipe_mill to allocate based on mill capacity (max_rate_tph)
+            if forecast_mask.any() and not map_recipe_mill.empty:
+                fcast_fcast = fcast[forecast_mask].copy()
+                
+                if "recipe_id" in fcast_fcast.columns:
+                    # Calculate total capacity (sum of max_rate_tph) per recipe across ALL mills
+                    # This is needed for proper capacity-weighted allocation
+                    recipe_capacity_totals = map_recipe_mill.groupby("recipe_id")["max_rate_tph"].sum().reset_index()
+                    recipe_capacity_totals.rename(columns={"max_rate_tph": "total_capacity_all_mills"}, inplace=True)
+                    
+                    # Filter map_recipe_mill by requested mills only (includes max_rate_tph)
+                    allowed_mills = map_recipe_mill[map_recipe_mill["mill_id"].isin(mill_ids)].copy()
+                    
+                    # Join SKU forecast with allowed mills (only selected mills, with their capacity)
+                    fcast_merged = fcast_fcast.merge(
+                        allowed_mills[["recipe_id", "mill_id", "max_rate_tph"]],
+                        on="recipe_id",
+                        how="inner"  # Only include recipes that selected mills can produce
+                    )
+                    
+                    # Join with total capacity to calculate proper allocation
+                    fcast_merged = fcast_merged.merge(
+                        recipe_capacity_totals,
+                        on="recipe_id",
+                        how="left"
+                    )
+                    
+                    # Allocate proportionally based on mill capacity: 
+                    # mill_demand = (mill_max_rate_tph / total_capacity_all_mills) * sku_demand
+                    # This ensures capacity-weighted allocation, not even division
+                    # GUARDRAIL: Sum of individual mills (M1 + M2 + M3) = Total (all mills)
+                    # This works because: sum(mill_max_rate_tph / total_capacity_all_mills) = 1.0
+                    total_capacity = fcast_merged["total_capacity_all_mills"].fillna(1).replace(0, 1)
+                    capacity_ratio = fcast_merged["max_rate_tph"] / total_capacity
+                    fcast_merged["demand_tons"] = (fcast_merged["demand_tons"] * capacity_ratio).round(2)
+                    fcast_merged["demand_units"] = (fcast_merged["demand_units"] * capacity_ratio).round(0).astype(int)
+                    
+                    # Drop helper columns
+                    fcast_merged = fcast_merged.drop(columns=["max_rate_tph", "total_capacity_all_mills"], errors="ignore")
+                    result_rows.append(fcast_merged)
+            
+            # Combine results
+            if result_rows:
+                fcast = pd.concat(result_rows, ignore_index=True)
+                # Ensure date is datetime for further processing
+                if "date" in fcast.columns:
+                    fcast["date"] = pd.to_datetime(fcast["date"])
+            else:
+                fcast = pd.DataFrame()  # No data for selected mills
+        
+        if fcast.empty:
+            return {"data": []}
+
+        # Drop helper columns if they exist
+        fcast = fcast.drop(columns=["default_allocation_pct", "mill_id"], errors="ignore")
 
         # If horizon is "day", return daily data without aggregation
         if horizon == "day":
@@ -1923,6 +2109,80 @@ async def get_raw_material(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/wheat-requirement")
+async def get_wheat_requirement(
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    horizon: Optional[str] = Query(None, pattern="^(week|month|year)$"),
+    period: Optional[str] = None,
+    wheat_type_id: Optional[str] = None,
+    scenario: Optional[str] = Query("base"),
+):
+    """Return wheat requirement data with wheat type names for the Raw Material Ledger."""
+    try:
+        wheat_req = data_cache.get("fact_wheat_req", pd.DataFrame()).copy()
+        if wheat_req.empty:
+            return {"data": []}
+
+        # Filter by scenario
+        if scenario:
+            wheat_req = wheat_req[wheat_req["scenario_id"] == scenario]
+
+        # Filter by date range using period
+        from_dt, to_dt = _date_range(from_date, to_date)
+        start_p = from_dt.to_period("M").strftime("%Y-%m")
+        end_p = to_dt.to_period("M").strftime("%Y-%m")
+        wheat_req = wheat_req[(wheat_req["period"] >= start_p) & (wheat_req["period"] <= end_p)]
+
+        # Enrich with wheat type name
+        dim_wheat = data_cache.get("dim_wheat_type", pd.DataFrame())
+        if not dim_wheat.empty:
+            wheat_req = wheat_req.merge(dim_wheat[["wheat_type_id", "wheat_name"]], on="wheat_type_id", how="left")
+
+        # Normalize period to YYYY-MM format
+        # Handle both "YYYY-MM-DD HH:MM:SS" and "YYYY-MM" formats
+        def normalize_period(p):
+            if pd.isna(p):
+                return p
+            p_str = str(p)
+            # If it's a datetime string, parse and convert to YYYY-MM
+            if " " in p_str or len(p_str) > 7:
+                try:
+                    dt = pd.to_datetime(p_str)
+                    return dt.to_period("M").strftime("%Y-%m")
+                except:
+                    # If parsing fails, try to extract YYYY-MM from the string
+                    if "-" in p_str:
+                        parts = p_str.split("-")
+                        if len(parts) >= 2:
+                            return f"{parts[0]}-{parts[1]}"
+            # If already in YYYY-MM format, return as-is
+            if len(p_str) == 7 and p_str.count("-") == 1:
+                return p_str
+            return p_str
+
+        if "period" in wheat_req.columns:
+            wheat_req["period"] = wheat_req["period"].apply(normalize_period)
+
+        # Filter by wheat_type_id if provided
+        if wheat_type_id:
+            wheat_ids = [w.strip() for w in wheat_type_id.split(",")]
+            wheat_req = wheat_req[wheat_req["wheat_type_id"].isin(wheat_ids)]
+
+        # Apply period aggregation if horizon is provided
+        if horizon and horizon != "month":
+            # For week/year, we need to aggregate by the appropriate period
+            # For now, keep monthly aggregation as the base
+            pass
+
+        if period:
+            wheat_req = wheat_req[wheat_req["period"] == period]
+
+        return {"data": wheat_req.to_dict(orient="records")}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # ALERTS
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1986,12 +2246,42 @@ async def get_report_data(
     to_date: Optional[str] = None,
     horizon: Optional[str] = Query(None, pattern="^(week|month|year)$"),
     period: Optional[str] = None,
+    scenario: Optional[str] = Query("base"),
+    period_filter: Optional[str] = Query(None),  # "7days", "15days", "30days", "quarter", "year", "custom"
 ):
     try:
         from_dt, to_dt = _date_range(from_date, to_date)
+        
+        # For preset filters (not "custom"), exclude data before February 2026
+        # For custom date ranges, show all data in the selected range
+        FEBRUARY_2026_START = pd.Timestamp("2026-02-01")  # For quarter/year filters
+        FEBRUARY_15_2026 = pd.Timestamp("2026-02-15")  # For 7/15/30 days filters (day after historical end)
+        
+        if period_filter and period_filter != "custom":
+            # Preset filter: ensure we start from appropriate date
+            if period_filter in ["7days", "15days", "30days"]:
+                # For 7/15/30 days: start from February 15, 2026 (day after historical end)
+                if from_dt < FEBRUARY_15_2026:
+                    from_dt = FEBRUARY_15_2026
+                if to_dt < FEBRUARY_15_2026:
+                    to_dt = FEBRUARY_15_2026
+            else:
+                # For quarter/year: start from February 1, 2026
+                if from_dt < FEBRUARY_2026_START:
+                    from_dt = FEBRUARY_2026_START
+                if to_dt < FEBRUARY_2026_START:
+                    to_dt = FEBRUARY_2026_START
+            
+            # Convert adjusted dates back to strings for passing to other functions
+            from_date = from_dt.strftime("%Y-%m-%d")
+            to_date = to_dt.strftime("%Y-%m-%d")
 
         if report_id == "monthly-plan":
-            sched = _filter_dates(data_cache.get("fact_schedule", pd.DataFrame()).copy(), from_dt, to_dt)
+            sched = data_cache.get("fact_schedule", pd.DataFrame()).copy()
+            if not sched.empty and "date" in sched.columns:
+                sched["date"] = pd.to_datetime(sched["date"])
+                # Filter by date range (already adjusted for preset filters above)
+                sched = sched[(sched["date"] >= from_dt) & (sched["date"] <= to_dt)]
             if sched.empty:
                 return {"data": []}
             sched = _add_period(sched, horizon or "month")
@@ -2003,6 +2293,13 @@ async def get_report_data(
                 sched = sched.merge(dim_recipe[["recipe_id", "recipe_name"]], on="recipe_id", how="left")
             if not dim_mill.empty:
                 sched = sched.merge(dim_mill[["mill_id", "mill_name"]], on="mill_id", how="left")
+
+            # Apply scenario multiplier if needed
+            scenario = scenario or "base"
+            m = _mult(scenario)
+            if m != 1.0:
+                sched["planned_hours"] = (sched["planned_hours"] * m).round(2)
+                sched["tons_produced"] = (sched["tons_produced"] * m).round(2)
 
             # For reports, we aggregate to reduce rows, but ensure we get ALL aggregated groups
             agg = sched.groupby(["period", "mill_id", "mill_name", "recipe_id", "recipe_name"]).agg(
@@ -2023,15 +2320,18 @@ async def get_report_data(
             return {"data": records}
 
         elif report_id == "capacity-outlook":
-            cap_data = await get_mill_capacity(from_date=from_date, to_date=to_date, horizon=horizon, period=period)
+            # Use adjusted dates (already converted to strings if preset filter)
+            cap_data = await get_mill_capacity(from_date=from_date, to_date=to_date, horizon=horizon, period=period, scenario=scenario)
             return cap_data
 
         elif report_id == "demand-forecast":
-            fc_data = await get_sku_forecast(from_date=from_date, to_date=to_date, horizon=horizon, period=period)
+            # Use adjusted dates (already converted to strings if preset filter)
+            fc_data = await get_sku_forecast(from_date=from_date, to_date=to_date, horizon=horizon, period=period, scenario=scenario)
             return fc_data
 
         elif report_id == "raw-material":
-            rm_data = await get_raw_material(from_date=from_date, to_date=to_date, horizon=horizon, period=period)
+            # Use adjusted dates (already converted to strings if preset filter)
+            rm_data = await get_raw_material(from_date=from_date, to_date=to_date, horizon=horizon, period=period, scenario=scenario)
             return rm_data
 
         else:
@@ -2050,9 +2350,11 @@ async def download_report_csv(
     to_date: Optional[str] = None,
     horizon: str = Query("month", pattern="^(week|month|year)$"),
     period: Optional[str] = None,
+    scenario: Optional[str] = Query("base"),
+    period_filter: Optional[str] = Query(None),
 ):
     try:
-        report_data = await get_report_data(report_id, from_date, to_date, horizon, period)
+        report_data = await get_report_data(report_id, from_date, to_date, horizon, period, scenario, period_filter)
         data = report_data.get("data", [])
         if not data:
             raise HTTPException(status_code=404, detail="No data available for this report")
@@ -2216,6 +2518,8 @@ async def send_report_email(
         to_date = request_data.get("to_date")
         horizon = request_data.get("horizon", "month")
         period = request_data.get("period")
+        scenario = request_data.get("scenario", "base")
+        period_filter = request_data.get("period_filter")
 
         # Get full report data with all date filters - use same function as download
         # This ensures we get the exact same data that would be downloaded
@@ -2224,7 +2528,9 @@ async def send_report_email(
             from_date=from_date,
             to_date=to_date,
             horizon=horizon,
-            period=period
+            period=period,
+            scenario=scenario,
+            period_filter=period_filter
         )
         data = report_data.get("data", [])
         if not data:
